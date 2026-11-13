@@ -1,58 +1,76 @@
-# Quantile forecaster for Polymarket NVIDIA CEO prices
+# Forecasting Polymarket's next NVIDIA CEO prices
 
-Entry for make.fun competition `polymarket-nvidia-ceo-forecast-01`: forecast the
-Yes price of every trading market of Polymarket's "Next CEO of NVIDIA?" event at
-every minute of the 4 hours after a checkpoint, as five quantiles
-(0.05, 0.25, 0.5, 0.75, 0.95) per market per minute.
+A make.fun entry for `polymarket-nvidia-ceo-forecast-01`.
 
-## Program
+The competition asks for the Yes price of every trading market in Polymarket's
+"Next CEO of NVIDIA?" event, at every minute of the four hours after a
+checkpoint, expressed as five quantiles (0.05, 0.25, 0.5, 0.75, 0.95) for each
+market and each minute.
 
-`main.ts` (Node 22, standard library only, no network, deterministic). Run
-locally on the kit's practice cases with:
+## Running it
+
+The entry point is `main.ts`, plain Node 22 with only the standard library.
+It needs no network and no randomness, so repeated runs are byte-identical.
 
 ```
 MAKEFUN_INPUT_DIR=input MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
-## Method
+It reads every `<id>.in` case file from the input directory and writes one
+`<id>.out` forecast file per case into the output directory.
 
-- **Median = persistence.** The median stays at the market's last price at the
-  checkpoint. Drift, mean-reversion to trailing means, and momentum
-  extrapolations were all tested on the six practice cases and all made the
-  practice loss worse, so the median is the checkpoint price.
-- **Sub-diffusive spread.** The predictive standard deviation grows as
-  `0.0015 * h^0.4`, not `sqrt(h)`: realised 10-minute moves imply a sigma of
-  ~0.0037 per sqrt-minute, while 240-minute moves imply only ~0.0020, so
-  variance grows slower than a random walk's.
-- **Per-market realised volatility.** Each market's spread is scaled by its
-  own recent volatility — the standard deviation of its 1-minute changes over
-  the last 240 minutes, relative to 0.0025, blended 80/20 with 1. A market
-  that just jumped gets a much wider spread; a quiet market a narrower one.
-  Short windows (120–360 min) beat long ones (1440 min) on the practice data.
-- **Tighter inner quantiles.** The 25%/75% quantiles sit 0.9x as far from the
-  median as the normal spread implies: Polymarket prices move in steps and
-  sit still most minutes, so the centre of the predictive distribution is
-  narrower than a normal with the same tail spread. (Measured on the practice
-  cases: 0.2656 -> 0.2648 mean pinball loss.)
-- **Sum constraint.** The 24 Yes prices are probabilities of mutually
-  exclusive outcomes, so their sum should sit near 1. After computing the
-  medians, each horizon's medians are scaled multiplicatively so their sum
-  decays exponentially from the checkpoint sum toward 0.99 with a 240-minute
-  time constant, keeping each row's quantile offsets around its new median.
-- Quantiles are the standard normal's at the five levels around the median,
-  clamped to [0, 1], rounded to 6 decimals, non-decreasing.
+## How the forecast works
 
-## Local validation
+**The median is the last price.** Polymarket prices are close to a
+martingale, and on the six practice cases every attempt at adding drift —
+trend following, reversion to a trailing average, momentum — made the score
+worse. So each market's median forecast is simply its price at the
+checkpoint.
 
-Scored against Polymarket's recorded prices for the six practice cases
-(p00–p05, fetched from the public `prices-history` endpoint and gridded exactly
-as the rules describe), this entry scores a mean pinball loss of **0.2648** vs
-the house baseline's **0.3636** (median error 0.749 vs 0.768), and beats the
-baseline on every single practice case (16%–53% better). Leave-one-case-out:
-the same configuration beats the baseline on each held-out case too. Runtime
-is ~0.3 s per case (cap 8 s); outputs are ~260 KB max (cap 1 MiB); two runs
-are byte-identical.
+**The spread grows slower than a random walk.** The predictive standard
+deviation is `0.0015 * h^0.4` for horizon `h` in minutes. Realised moves say
+the same thing: ten-minute moves imply about 0.0037 per root-minute, while
+240-minute moves imply only about 0.0020, so variance accumulates more
+slowly than `h`.
+
+**Each market gets its own scale.** The base spread is multiplied by a
+per-market factor from that market's own recent realised volatility: the
+standard deviation of its one-minute changes over the last 240 minutes,
+divided by 0.0025, blended 80/20 with 1. A market that has just jumped gets
+a wider fan; a quiet one gets a narrower fan. Short measurement windows
+(120–360 minutes) scored better than long ones (1440 minutes) on the
+practice cases.
+
+**The middle of the fan is pinched.** The 25% and 75% quantiles are placed
+0.9x as far from the median as a normal spread would put them. Prices on
+this market move in steps and sit still in most minutes, so the centre of
+the predictive distribution is tighter than a normal with the same tails.
+On the practice cases this shaved the mean pinball loss from 0.2656 to
+0.2648.
+
+**The probabilities have to add up.** The 24 Yes prices are chances of
+mutually exclusive outcomes, so they should sum to about 1. At the practice
+checkpoints they sum to 1.02–1.08 and drift down toward 0.99 over the next
+four hours. Each horizon's medians are therefore rescaled so their sum
+decays exponentially from the checkpoint sum toward 0.99 with a 240-minute
+time constant, with every row's quantile offsets carried along around the
+rescaled median.
+
+Quantiles are the standard normal's at the five scored levels, clamped to
+[0, 1], rounded to six decimals, and non-decreasing within each row.
+
+## How well does it do?
+
+I scored it locally against Polymarket's own recorded prices for the six
+practice cases (p00–p05), fetched from the public `prices-history` endpoint
+and placed on the one-minute grid exactly as the rules describe. The mean
+pinball loss is **0.2648**, against **0.3636** for the house baseline — better
+on every single practice case, by 16%–53%. The same configuration also beats
+the baseline on each held-out case when scored leave-one-case-out.
+
+A case runs in about 0.05 s (the cap is 8 s) and the largest output file is
+about 260 KB (the cap is 1 MiB).
 
 ## License
 
-MIT (see LICENSE).
+MIT — see `LICENSE`.
