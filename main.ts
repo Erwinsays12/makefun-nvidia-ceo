@@ -1,33 +1,35 @@
 // polymarket-nvidia-ceo-forecast-01 entry (Node 22, standard library only).
 //
-// Forecast: for each market, the median stays at its last price (persistence —
-// every drift / mean-reversion / momentum variant tested on the six practice
-// cases made the practice loss worse, so the median is the checkpoint price),
-// with a predictive spread that is
-//   - sub-diffusive in horizon: sd(h) = S0 * h^BETA (BETA = 0.4, not 0.5:
-//     realised 10-min moves imply sigma 0.0037 per sqrt-min, 240-min moves
-//     only 0.0020, so variance grows slower than a random walk's), and
+// Forecast: for each market, the median stays at its last price (persistence).
+// Every drift, mean-reversion and momentum variant I tested on the six
+// practice cases made the practice loss worse, so the median is the checkpoint
+// price. The predictive spread is
+//   - sub-diffusive in horizon: sd(h) = 0.0015 * h^0.4, not sqrt(h): realised
+//     10-minute moves imply sigma ~0.0037 per sqrt-minute, 240-minute moves
+//     only ~0.0020, so variance grows slower than a random walk's; and
 //   - scaled per market by its own recent realised volatility: the std of its
 //     1-minute changes over the last 240 minutes, relative to 0.0025, blended
 //     80/20 with 1 (a market that just jumped gets a much wider spread; a
-//     quiet market a narrower one). Short windows (120-360 min) all beat long
-//     ones (1440 min) on the practice cases.
+//     quiet market a narrower one). Short windows (120-360 min) beat long ones
+//     (1440 min) on the practice cases.
 // Quantiles are the standard normal's at the five levels around the median,
 // clamped to [0,1], rounded to 6 decimals, non-decreasing.
 //
-// The 24 Yes prices are probabilities of mutually exclusive outcomes, so
-// their sum should sit near 1 (the practice checkpoints sum to 1.02-1.08 and
-// drift down toward ~0.99 over the next 4 hours). After computing the
-// medians, each horizon's medians are scaled multiplicatively so their sum
-// decays exponentially from the checkpoint sum toward 0.99 with a 240-minute
-// time constant, keeping each row's quantile offsets around its new median.
-// On the six practice cases (scored against Polymarket's recorded prices)
-// this scores a mean pinball loss of 0.2656 vs the house baseline's 0.3636,
-// and beats the baseline on every single practice case (16%-53% better).
+// The 24 Yes prices are probabilities of mutually exclusive outcomes, so their
+// sum should sit near 1 (the practice checkpoints sum to 1.02-1.08 and drift
+// down toward ~0.99 over the next 4 hours). After computing the medians, each
+// horizon's medians are scaled multiplicatively so their sum decays
+// exponentially from the checkpoint sum toward 0.99 with a 240-minute time
+// constant, keeping each row's quantile offsets around its new median.
 //
 // Deterministic: a pure function of the case file, no randomness, no clock,
 // no network. Reads every <id>.in in the input directory and writes one
 // <id>.out per case, exactly as the rules require.
+//
+// Local validation (scored against Polymarket's recorded prices for the six
+// practice cases p00-p05, fetched from the public prices-history endpoint and
+// gridded exactly as the rules describe): mean pinball loss 0.2648 vs the
+// house baseline's 0.3636, beating the baseline on every practice case.
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -49,6 +51,10 @@ const VOL_REF = 0.0025;
 const VOL_WEIGHT = 0.8;
 /** Minutes of history the realised volatility is measured over. */
 const VOL_WINDOW = 240;
+/** Inner quantiles (25%/75%) sit this much closer to the median than the
+    normal spread implies: prices move in steps and sit still most minutes,
+    so the centre is narrower than a normal with the same tail spread. */
+const CENTER_FACTOR = 0.9;
 /** The sum of the medians decays toward this over the horizon. */
 const SUM_TARGET = 0.99;
 /** Time constant (minutes) of that decay. */
@@ -93,7 +99,10 @@ function forecast(m: CaseMarket, horizon: number): number[][] {
   const rows: number[][] = [];
   for (let h = 1; h <= horizon; h++) {
     const sd = S0 * Math.pow(h, BETA) * mult;
-    const row = Z.map((z) => price6(x + z * sd));
+    const row = Z.map((z, j) => {
+      const zz = j === 1 || j === 3 ? z * CENTER_FACTOR : z;
+      return price6(x + zz * sd);
+    });
     for (let j = 1; j < 5; j++) if (row[j]! < row[j - 1]!) row[j] = row[j - 1]!;
     rows.push(row);
   }
@@ -110,7 +119,7 @@ for (const file of inputs) {
   const H = c.horizon_minutes;
   const forecasts = c.markets.map((m) => ({ id: m.id, q: forecast(m, H) }));
   // Sum constraint: scale each horizon's medians so their sum decays from the
-  // checkpoint sum toward SUM_TARGET (row index 0-based, matching the tuned form).
+  // checkpoint sum toward SUM_TARGET.
   const s0sum = c.markets.reduce((s, m) => s + (m.prices[m.prices.length - 1] as number), 0);
   for (let h = 0; h < H; h++) {
     let s = 0;
